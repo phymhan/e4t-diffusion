@@ -620,9 +620,10 @@ def main():
                     noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps)
                     encoder_hidden_states_for_e4t_forward = encoder_hidden_states_for_e4t.expand(bsz, -1, -1)
                     # Get the unet encoder outputs
-                    encoder_outputs = unet(noisy_latents, timesteps, encoder_hidden_states_for_e4t_forward, return_encoder_outputs=True)
+                    with torch.no_grad():
+                        encoder_outputs = unet(noisy_latents, timesteps, encoder_hidden_states_for_e4t_forward, return_encoder_outputs=True)
                     # Forward E4T encoder to get the embedding
-                    domain_embed = e4t_encoder(x=pixel_values, unet_down_block_samples=encoder_outputs["down_block_samples"])
+                    domain_embed, lora_embed = e4t_encoder(x=pixel_values, unet_down_block_samples=encoder_outputs["down_block_samples"])
                     # update word embedding
                     domain_embed = class_embed.clone().expand(bsz, -1) + args.domain_embed_scale * domain_embed
                     

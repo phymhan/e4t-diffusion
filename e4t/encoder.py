@@ -125,10 +125,9 @@ class E4TEncoder(ModelMixin, ConfigMixin):
         self.final_linear = nn.Linear(clip_vision_hidden_size, word_embedding_dim)
         self.image_size = 224
         self.antialias = antialias
-        if kwargs.get("predict_wo_embed", False):
-            self.wo_linear = nn.Linear(clip_vision_hidden_size, word_embedding_dim)
-        else:
-            self.wo_linear = None
+        ##########
+        # self.lora_linear = nn.Linear(clip_vision_hidden_size, word_embedding_dim)
+        ##########
         self.register_buffer('mean', torch.Tensor([0.48145466, 0.4578275, 0.40821073]), persistent=False)
         self.register_buffer('std', torch.Tensor([0.26862954, 0.26130258, 0.27577711]), persistent=False)
 
@@ -149,8 +148,8 @@ class E4TEncoder(ModelMixin, ConfigMixin):
         """
         # unet pooling
         unet_down_block_samples = [sample.mean(dim=(2, 3)) for sample in unet_down_block_samples]
-        unet_pooled_features = torch.cat(unet_down_block_samples, dim=-1)
-        unet_pooled_features = self.unet_feature_embedder(unet_pooled_features)
+        unet_pooled_features_concat = torch.cat(unet_down_block_samples, dim=-1)
+        unet_pooled_features = self.unet_feature_embedder(unet_pooled_features_concat)
 
         # clip feature extractor
         # x is assumed to be in range [-1,1]
@@ -169,7 +168,8 @@ class E4TEncoder(ModelMixin, ConfigMixin):
         clip_hidden_states = torch.mean(clip_hidden_states, dim=0)
         clip_hidden_states = self.act(clip_hidden_states)
         # final linear layer
-        return self.final_linear(clip_hidden_states)
+        ##########
+        return self.final_linear(clip_hidden_states), None #self.lora_linear(clip_hidden_states)
 
 
 if __name__ == '__main__':

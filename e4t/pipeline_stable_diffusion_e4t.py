@@ -191,7 +191,7 @@ class StableDiffusionE4TPipeline(StableDiffusionPipeline):
                 encoder_outputs = self.unet(latents_in, t, encoder_hidden_states_for_e4t_forward, return_encoder_outputs=True)
                 # Forward E4T encoder to get the embedding
                 pixel_values = image.expand(bsz, -1, -1, -1).to(device)
-                domain_embed = self.e4t_encoder(x=pixel_values, unet_down_block_samples=encoder_outputs["down_block_samples"])
+                domain_embed, lora_embed = self.e4t_encoder(x=pixel_values, unet_down_block_samples=encoder_outputs["down_block_samples"])
                 # update word embedding
                 domain_embed = self.class_embed.clone().expand(bsz, -1).to(device) + domain_embed_scale * domain_embed
                 inputs_embeds_forward = e4t_inputs["inputs_embeds"].expand(bsz, -1, -1).clone().to(dtype=self.text_encoder.dtype, device=device)
@@ -221,6 +221,7 @@ class StableDiffusionE4TPipeline(StableDiffusionPipeline):
                     if callback is not None and i % callback_steps == 0:
                         callback(i, t, latents)
 
+        has_nsfw_concept = [False] * len(latents)
         if output_type == "latent":
             image = latents
             has_nsfw_concept = None
@@ -229,7 +230,7 @@ class StableDiffusionE4TPipeline(StableDiffusionPipeline):
             image = self.decode_latents(latents)
 
             # 9. Run safety checker
-            image, has_nsfw_concept = self.run_safety_checker(image, device, prompt_embeds.dtype)
+            # image, has_nsfw_concept = self.run_safety_checker(image, device, prompt_embeds.dtype)
 
             # 10. Convert to PIL
             image = self.numpy_to_pil(image)
@@ -238,7 +239,7 @@ class StableDiffusionE4TPipeline(StableDiffusionPipeline):
             image = self.decode_latents(latents)
 
             # 9. Run safety checker
-            image, has_nsfw_concept = self.run_safety_checker(image, device, prompt_embeds.dtype)
+            # image, has_nsfw_concept = self.run_safety_checker(image, device, prompt_embeds.dtype)
 
         # Offload last model to CPU
         if hasattr(self, "final_offload_hook") and self.final_offload_hook is not None:
