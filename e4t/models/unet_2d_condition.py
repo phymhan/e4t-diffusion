@@ -75,6 +75,7 @@ class UNet2DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
             conv_in_kernel: int = 3,
             conv_out_kernel: int = 3,
             projection_class_embeddings_input_dim: Optional[int] = None,
+            **kwargs,
     ):
         super().__init__()
 

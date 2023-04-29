@@ -58,3 +58,8 @@ tuning-*
 models
 *.sh
 grid.png
+
+*.png
+checkpoints/
+logs/
+images/

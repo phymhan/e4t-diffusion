@@ -62,7 +62,6 @@ art_templates = templates + [
 ]
 
 
-
 def parse_args():
     parser = argparse.ArgumentParser(description="Simple example of a training script.")
     # e4t configs
@@ -237,7 +236,7 @@ def main():
     vae = AutoencoderKL.from_pretrained(args.pretrained_model_name_or_path, subfolder="vae", revision=args.revision)
     unet = load_e4t_unet(
         args.pretrained_model_name_or_path, 
-        ckpt_path=os.path.join(args.pretrained_model_name_or_path, "weight_offsets.pt") if os.path.exists(os.path.join(args.pretrained_model_name_or_path, "weight_offsets.pt")) else None,
+        ckpt_path=os.path.join(args.pretrained_model_name_or_path, "unet.pt") if os.path.exists(os.path.join(args.pretrained_model_name_or_path, "weight_offsets.pt")) else None,
         revision=args.revision
     )
     # encoder
@@ -505,9 +504,9 @@ def main():
                 },
                 step=step
             )
-        else:
-            input_grid.save(os.path.join(sample_dir, f"input-{step}.png"))
-            sample_grid.save(os.path.join(sample_dir, f"sample-{step}.png"))
+        # else:
+        input_grid.save(os.path.join(sample_dir, f"input-{step}.png"))
+        sample_grid.save(os.path.join(sample_dir, f"sample-{step}.png"))
         del pipeline
         if torch.cuda.is_available():
             torch.cuda.empty_cache()

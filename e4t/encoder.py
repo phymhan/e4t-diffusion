@@ -125,6 +125,10 @@ class E4TEncoder(ModelMixin, ConfigMixin):
         self.final_linear = nn.Linear(clip_vision_hidden_size, word_embedding_dim)
         self.image_size = 224
         self.antialias = antialias
+        if kwargs.get("predict_wo_embed", False):
+            self.wo_linear = nn.Linear(clip_vision_hidden_size, word_embedding_dim)
+        else:
+            self.wo_linear = None
         self.register_buffer('mean', torch.Tensor([0.48145466, 0.4578275, 0.40821073]), persistent=False)
         self.register_buffer('std', torch.Tensor([0.26862954, 0.26130258, 0.27577711]), persistent=False)
 

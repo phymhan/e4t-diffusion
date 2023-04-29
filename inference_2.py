@@ -81,7 +81,7 @@ def main():
     pretrained_model_name_or_path = getattr_from_config(config, "pretrained_model_name_or_path")
     # unet
     unet = load_e4t_unet(
-        ckpt_path=os.path.join(args.pretrained_model_name_or_path, "weight_offsets.pt"),
+        ckpt_path=os.path.join(args.pretrained_model_name_or_path, "unet.pt"),
     )
     # text encoder
     tokenizer = CLIPTokenizer.from_pretrained(pretrained_model_name_or_path, subfolder="tokenizer")
@@ -149,8 +149,8 @@ def main():
             ).images
         all_images.extend(images)
     grid_image = image_grid(all_images, len(prompts), args.num_images_per_prompt)
-    grid_image.save("grid.png")
-    print("DONE! See `grid.png` for the results!")
+    grid_image.save("grid_2.png")
+    print("DONE! See `grid_2.png` for the results!")
 
 
 if __name__ == '__main__':
