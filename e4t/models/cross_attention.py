@@ -7,7 +7,7 @@ from torch import nn
 from diffusers.utils import deprecate, logging
 from diffusers.utils.import_utils import is_xformers_available
 from e4t.weightoffsets import WeightOffsets
-
+from einops import rearrange, repeat
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
@@ -294,7 +294,10 @@ class CrossAttnProcessor:
         attention_mask = attn.prepare_attention_mask(attention_mask, sequence_length, batch_size)
         ######################
         # query = attn.to_q(hidden_states)
-        query = F.linear(hidden_states, attn.to_q.weight * (1 + attn.wo_q()), bias=attn.to_q.bias)
+        # if attn.wo_k.row_dim != attn.wo_k.column_dim:
+        #     breakpoint()
+        # query = F.linear(hidden_states, attn.to_q.weight * (1 + attn.wo_q(hidden_states)), bias=attn.to_q.bias)
+        query = torch.einsum("bij,bkj->bik", hidden_states, repeat(attn.to_q.weight, 'i j -> b i j', b=batch_size) * (1 + attn.wo_q(hidden_states))) + (attn.to_q.bias if attn.to_q.bias is not None else 0.)
         ######################
         if encoder_hidden_states is None:
             encoder_hidden_states = hidden_states
@@ -302,9 +305,11 @@ class CrossAttnProcessor:
             encoder_hidden_states = attn.norm_cross(encoder_hidden_states)
         ######################
         # key = attn.to_k(encoder_hidden_states)
-        key = F.linear(encoder_hidden_states, attn.to_k.weight * (1 + attn.wo_k()), bias=attn.to_k.bias)
+        # key = F.linear(encoder_hidden_states, attn.to_k.weight * (1 + attn.wo_k(encoder_hidden_states)), bias=attn.to_k.bias)
+        key = torch.einsum("bij,bkj->bik", encoder_hidden_states, repeat(attn.to_k.weight, 'i j -> b i j', b=batch_size) * (1 + attn.wo_k(encoder_hidden_states))) + (attn.to_k.bias if attn.to_k.bias is not None else 0.)
         # value = attn.to_v(encoder_hidden_states)
-        value = F.linear(encoder_hidden_states, attn.to_v.weight * (1 + attn.wo_v()), bias=attn.to_v.bias)
+        # value = F.linear(encoder_hidden_states, attn.to_v.weight * (1 + attn.wo_v(encoder_hidden_states)), bias=attn.to_v.bias)
+        value = torch.einsum("bij,bkj->bik", encoder_hidden_states, repeat(attn.to_v.weight, 'i j -> b i j', b=batch_size) * (1 + attn.wo_v(encoder_hidden_states))) + (attn.to_v.bias if attn.to_v.bias is not None else 0.)
         ######################
         query = attn.head_to_batch_dim(query)
         key = attn.head_to_batch_dim(key)
@@ -366,7 +371,8 @@ class LoRACrossAttnProcessor(nn.Module):
 
         ######################
         # query = attn.to_q(hidden_states) + scale * self.to_q_lora(hidden_states)
-        query = F.linear(hidden_states, attn.to_q.weight * (1 + attn.wo_q()), bias=attn.to_q.bias)
+        breakpoint()
+        query = F.linear(hidden_states, attn.to_q.weight * (1 + attn.wo_q(hidden_states)), bias=attn.to_q.bias)
         query = query + scale * self.to_q_lora(hidden_states)
         ######################
         query = attn.head_to_batch_dim(query)
@@ -374,10 +380,10 @@ class LoRACrossAttnProcessor(nn.Module):
         encoder_hidden_states = encoder_hidden_states if encoder_hidden_states is not None else hidden_states
         ######################
         # key = attn.to_k(encoder_hidden_states) + scale * self.to_k_lora(encoder_hidden_states)
-        key = F.linear(encoder_hidden_states, attn.to_k.weight * (1 + attn.wo_k()), bias=attn.to_k.bias)
+        key = F.linear(encoder_hidden_states, attn.to_k.weight * (1 + attn.wo_k(encoder_hidden_states)), bias=attn.to_k.bias)
         key = key + scale * self.to_k_lora(encoder_hidden_states)
         # value = attn.to_v(encoder_hidden_states) + scale * self.to_v_lora(encoder_hidden_states)
-        value = F.linear(encoder_hidden_states, attn.to_v.weight * (1 + attn.wo_v()), bias=attn.to_v.bias)
+        value = F.linear(encoder_hidden_states, attn.to_v.weight * (1 + attn.wo_v(encoder_hidden_states)), bias=attn.to_v.bias)
         value = value + scale * self.to_v_lora(encoder_hidden_states)
         ######################
         key = attn.head_to_batch_dim(key)
@@ -408,15 +414,16 @@ class CrossAttnAddedKVProcessor:
 
         ######################
         # query = attn.to_q(hidden_states)
-        query = F.linear(hidden_states, attn.to_q.weight * (1 + attn.wo_q()), bias=attn.to_q.bias)
+        breakpoint()
+        query = F.linear(hidden_states, attn.to_q.weight * (1 + attn.wo_q(hidden_states)), bias=attn.to_q.bias)
         ######################
         query = attn.head_to_batch_dim(query)
 
         ######################
         # key = attn.to_k(encoder_hidden_states)
-        key = F.linear(encoder_hidden_states, attn.to_k.weight * (1 + attn.wo_k()), bias=attn.to_k.bias)
+        key = F.linear(encoder_hidden_states, attn.to_k.weight * (1 + attn.wo_k(encoder_hidden_states)), bias=attn.to_k.bias)
         # value = attn.to_v(encoder_hidden_states)
-        value = F.linear(encoder_hidden_states, attn.to_v.weight * (1 + attn.wo_v()), bias=attn.to_v.bias)
+        value = F.linear(encoder_hidden_states, attn.to_v.weight * (1 + attn.wo_v(encoder_hidden_states)), bias=attn.to_v.bias)
         ######################
         key = attn.head_to_batch_dim(key)
         value = attn.head_to_batch_dim(value)
@@ -455,7 +462,7 @@ class XFormersCrossAttnProcessor:
 
         ######################
         # query = attn.to_q(hidden_states)
-        query = F.linear(hidden_states, attn.to_q.weight * (1 + attn.wo_q()), bias=attn.to_q.bias)
+        query = F.linear(hidden_states, attn.to_q.weight * (1 + attn.wo_q(hidden_states)), bias=attn.to_q.bias)
         ######################
 
         if encoder_hidden_states is None:
@@ -465,9 +472,9 @@ class XFormersCrossAttnProcessor:
 
         ######################
         # key = attn.to_k(encoder_hidden_states)
-        key = F.linear(encoder_hidden_states, attn.to_k.weight * (1 + attn.wo_k()), bias=attn.to_k.bias)
+        key = F.linear(encoder_hidden_states, attn.to_k.weight * (1 + attn.wo_k(encoder_hidden_states)), bias=attn.to_k.bias)
         # value = attn.to_v(encoder_hidden_states)
-        value = F.linear(encoder_hidden_states, attn.to_v.weight * (1 + attn.wo_v()), bias=attn.to_v.bias)
+        value = F.linear(encoder_hidden_states, attn.to_v.weight * (1 + attn.wo_v(encoder_hidden_states)), bias=attn.to_v.bias)
         ######################
 
         query = attn.head_to_batch_dim(query).contiguous()
@@ -503,7 +510,7 @@ class AttnProcessor2_0:
 
         ######################
         # query = attn.to_q(hidden_states)
-        query = F.linear(hidden_states, attn.to_q.weight * (1 + attn.wo_q()), bias=attn.to_q.bias)
+        query = F.linear(hidden_states, attn.to_q.weight * (1 + attn.wo_q(hidden_states)), bias=attn.to_q.bias)
         ######################
 
         if encoder_hidden_states is None:
@@ -513,9 +520,9 @@ class AttnProcessor2_0:
 
         ######################
         # key = attn.to_k(encoder_hidden_states)
-        key = F.linear(encoder_hidden_states, attn.to_k.weight * (1 + attn.wo_k()), bias=attn.to_k.bias)
+        key = F.linear(encoder_hidden_states, attn.to_k.weight * (1 + attn.wo_k(encoder_hidden_states)), bias=attn.to_k.bias)
         # value = attn.to_v(encoder_hidden_states)
-        value = F.linear(encoder_hidden_states, attn.to_v.weight * (1 + attn.wo_v()), bias=attn.to_v.bias)
+        value = F.linear(encoder_hidden_states, attn.to_v.weight * (1 + attn.wo_v(encoder_hidden_states)), bias=attn.to_v.bias)
         ######################
 
         head_dim = inner_dim // attn.heads
@@ -560,7 +567,7 @@ class LoRAXFormersCrossAttnProcessor(nn.Module):
 
         ######################
         # query = attn.to_q(hidden_states) + scale * self.to_q_lora(hidden_states)
-        query = F.linear(hidden_states, attn.to_q.weight * (1 + attn.wo_q()), bias=attn.to_q.bias)
+        query = F.linear(hidden_states, attn.to_q.weight * (1 + attn.wo_q(hidden_states)), bias=attn.to_q.bias)
         query = query + scale * self.to_q_lora(hidden_states)
         ######################
         query = attn.head_to_batch_dim(query).contiguous()
@@ -569,10 +576,10 @@ class LoRAXFormersCrossAttnProcessor(nn.Module):
 
         ######################
         # key = attn.to_k(encoder_hidden_states) + scale * self.to_k_lora(encoder_hidden_states)
-        key = F.linear(encoder_hidden_states, attn.to_k.weight * (1 + attn.wo_k()), bias=attn.to_k.bias)
+        key = F.linear(encoder_hidden_states, attn.to_k.weight * (1 + attn.wo_k(encoder_hidden_states)), bias=attn.to_k.bias)
         key = key + scale * self.to_k_lora(encoder_hidden_states)
         # value = attn.to_v(encoder_hidden_states) + scale * self.to_v_lora(encoder_hidden_states)
-        value = F.linear(encoder_hidden_states, attn.to_v.weight * (1 + attn.wo_v()), bias=attn.to_v.bias)
+        value = F.linear(encoder_hidden_states, attn.to_v.weight * (1 + attn.wo_v(encoder_hidden_states)), bias=attn.to_v.bias)
         value = value + scale * self.to_v_lora(encoder_hidden_states)
         ######################
 
@@ -603,7 +610,7 @@ class SlicedAttnProcessor:
 
         ######################
         # query = attn.to_q(hidden_states)
-        query = F.linear(hidden_states, attn.to_q.weight * (1 + attn.wo_q()), bias=attn.to_q.bias)
+        query = F.linear(hidden_states, attn.to_q.weight * (1 + attn.wo_q(hidden_states)), bias=attn.to_q.bias)
         ######################
         dim = query.shape[-1]
         query = attn.head_to_batch_dim(query)
@@ -615,9 +622,9 @@ class SlicedAttnProcessor:
 
         ######################
         # key = attn.to_k(encoder_hidden_states)
-        key = F.linear(encoder_hidden_states, attn.to_k.weight * (1 + attn.wo_k()), bias=attn.to_k.bias)
+        key = F.linear(encoder_hidden_states, attn.to_k.weight * (1 + attn.wo_k(encoder_hidden_states)), bias=attn.to_k.bias)
         # value = attn.to_v(encoder_hidden_states)
-        value = F.linear(encoder_hidden_states, attn.to_v.weight * (1 + attn.wo_v()), bias=attn.to_v.bias)
+        value = F.linear(encoder_hidden_states, attn.to_v.weight * (1 + attn.wo_v(encoder_hidden_states)), bias=attn.to_v.bias)
         ######################
         key = attn.head_to_batch_dim(key)
         value = attn.head_to_batch_dim(value)
@@ -668,16 +675,16 @@ class SlicedAttnAddedKVProcessor:
 
         ######################
         # query = attn.to_q(hidden_states)
-        query = F.linear(hidden_states, attn.to_q.weight * (1 + attn.wo_q()), bias=attn.to_q.bias)
+        query = F.linear(hidden_states, attn.to_q.weight * (1 + attn.wo_q(hidden_states)), bias=attn.to_q.bias)
         ######################
         dim = query.shape[-1]
         query = attn.head_to_batch_dim(query)
 
         ######################
         # key = attn.to_k(encoder_hidden_states)
-        key = F.linear(encoder_hidden_states, attn.to_k.weight * (1 + attn.wo_k()), bias=attn.to_k.bias)
+        key = F.linear(encoder_hidden_states, attn.to_k.weight * (1 + attn.wo_k(encoder_hidden_states)), bias=attn.to_k.bias)
         # value = attn.to_v(encoder_hidden_states)
-        value = F.linear(encoder_hidden_states, attn.to_v.weight * (1 + attn.wo_v()), bias=attn.to_v.bias)
+        value = F.linear(encoder_hidden_states, attn.to_v.weight * (1 + attn.wo_v(encoder_hidden_states)), bias=attn.to_v.bias)
         ######################
         encoder_hidden_states_key_proj = attn.add_k_proj(encoder_hidden_states)
         encoder_hidden_states_value_proj = attn.add_v_proj(encoder_hidden_states)

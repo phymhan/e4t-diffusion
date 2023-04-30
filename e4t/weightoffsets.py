@@ -2,16 +2,46 @@ import torch
 from torch import nn
 
 
+# class WeightOffsets(nn.Module):
+#     def __init__(self, row_dim, column_dim):
+#         super().__init__()
+#         self.v = nn.Parameter(torch.ones(1))  # v0 dim == 1
+#         self.linear1 = nn.Linear(1, row_dim)
+#         self.linear2 = nn.Linear(1, column_dim)
+#         self.linear_column = nn.Linear(row_dim, row_dim)
+#         self.linear_row = nn.Linear(column_dim, column_dim)
+        
+#     def forward(self, input=None):
+#         vx = self.linear1(self.v) # (row_dim)
+#         vy = self.linear2(self.v) # (column_dim)
+#         # matrix multiplication -> (row_dim, column_dim)
+#         v_matrix = vx.unsqueeze(0).T * vy.unsqueeze(0)
+#         # columnwise
+#         v_matrix = self.linear_column(v_matrix.T)
+#         # rowwise
+#         v_matrix = self.linear_row(v_matrix.T)
+#         return v_matrix.T
+
+
 class WeightOffsets(nn.Module):
     def __init__(self, row_dim, column_dim):
         super().__init__()
-        self.v = nn.Parameter(torch.ones(1))
-        self.linear1 = nn.Linear(1, row_dim)
-        self.linear2 = nn.Linear(1, column_dim)
+        v0_dim = 512
+        self.row_dim = row_dim
+        self.column_dim = column_dim
+        self.v = nn.Parameter(torch.randn(v0_dim)*1.)  # v0 dim == 1
+        # self.linear1 = nn.Linear(v0_dim, row_dim)
+        # self.linear2 = nn.Linear(v0_dim, column_dim)
+        self.linear1 = nn.Linear(row_dim, row_dim)
+        self.linear2 = nn.Linear(768, column_dim)
         self.linear_column = nn.Linear(row_dim, row_dim)
         self.linear_row = nn.Linear(column_dim, column_dim)
 
-    def forward(self):
+        with torch.no_grad():
+            self.linear_row.weight.data.zero_()
+            self.linear_row.bias.data.zero_()
+        
+    def forward(self, input: torch.Tensor = None):
         vx = self.linear1(self.v) # (row_dim)
         vy = self.linear2(self.v) # (column_dim)
         # matrix multiplication -> (row_dim, column_dim)

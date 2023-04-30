@@ -31,6 +31,7 @@ from e4t.models.modeling_clip import CLIPTextModel
 from e4t.encoder import E4TEncoder
 from e4t.pipeline_stable_diffusion_e4t import StableDiffusionE4TPipeline
 from e4t.utils import load_e4t_unet, load_e4t_encoder, save_e4t_unet, save_e4t_encoder, image_grid
+from e4t.utils import EmbedPointer, regiter_attention_editor_diffusers
 
 
 templates = [
@@ -449,7 +450,7 @@ def main():
     scheduler = DDIMScheduler.from_pretrained(args.pretrained_model_name_or_path, subfolder="scheduler")
 
     @torch.no_grad()
-    def sample(images, step):
+    def sample(images, step, embed_pointer=None):
         images_to_log = []
         # to pil
         x_samples = torch.clamp((images + 1.0) / 2.0, min=0.0, max=1.0)
@@ -492,6 +493,7 @@ def main():
                         num_inference_steps=args.save_inference_steps,
                         generator=g_cuda,
                         image=image,
+                        embed_pointer=embed_pointer,
                     ).images
                     image_list.append(images[0])
         input_grid = image_grid(selected_images_to_log, rows=1, cols=len(selected_images_to_log))
@@ -581,6 +583,10 @@ def main():
     # Get the text embedding for e4t conditioning
     encoder_hidden_states_for_e4t = text_encoder(input_ids_for_encoder.to(accelerator.device))[0].to(dtype=weight_dtype)
 
+    embed_pointer = [(-1, None)]
+    editor = EmbedPointer(embed_pointer=embed_pointer)
+    regiter_attention_editor_diffusers(unet, editor)
+
     try:
         for epoch in range(first_epoch, args.num_train_epochs):
             unet.train()
@@ -621,11 +627,19 @@ def main():
                     encoder_hidden_states_for_e4t_forward = encoder_hidden_states_for_e4t.expand(bsz, -1, -1)
                     # Get the unet encoder outputs
                     with torch.no_grad():
+                        ########## ???
+                        embed_pointer[0] = (global_step, None)
+                        # editor.embed = None
+                        ##########
                         encoder_outputs = unet(noisy_latents, timesteps, encoder_hidden_states_for_e4t_forward, return_encoder_outputs=True)
                     # Forward E4T encoder to get the embedding
                     domain_embed, lora_embed = e4t_encoder(x=pixel_values, unet_down_block_samples=encoder_outputs["down_block_samples"])
                     # update word embedding
                     domain_embed = class_embed.clone().expand(bsz, -1) + args.domain_embed_scale * domain_embed
+                    ##########
+                    embed_pointer[0] = (global_step, lora_embed)
+                    # editor.embed = lora_embed
+                    ##########
                     
                     for i, placeholder_token_id_idx in enumerate(placeholder_token_id_idxs):
                         inputs_embeds[i, placeholder_token_id_idx, :] = domain_embed[i]
@@ -666,7 +680,7 @@ def main():
                 if global_step == 1 or global_step % args.log_steps == 0:
                     images = accelerator.gather(batch["pixel_values"])
                     if accelerator.is_main_process:
-                        sample(images, global_step)
+                        sample(images, global_step, embed_pointer)
 
                 logs = {
                     "train/loss": loss.detach().item(),

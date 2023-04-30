@@ -126,7 +126,7 @@ class E4TEncoder(ModelMixin, ConfigMixin):
         self.image_size = 224
         self.antialias = antialias
         ##########
-        # self.lora_linear = nn.Linear(clip_vision_hidden_size, word_embedding_dim)
+        self.lora_linear = nn.Linear(clip_vision_hidden_size, word_embedding_dim)
         ##########
         self.register_buffer('mean', torch.Tensor([0.48145466, 0.4578275, 0.40821073]), persistent=False)
         self.register_buffer('std', torch.Tensor([0.26862954, 0.26130258, 0.27577711]), persistent=False)
@@ -169,7 +169,7 @@ class E4TEncoder(ModelMixin, ConfigMixin):
         clip_hidden_states = self.act(clip_hidden_states)
         # final linear layer
         ##########
-        return self.final_linear(clip_hidden_states), None #self.lora_linear(clip_hidden_states)
+        return self.final_linear(clip_hidden_states), self.lora_linear(clip_hidden_states)
 
 
 if __name__ == '__main__':

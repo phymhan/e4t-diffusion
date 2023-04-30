@@ -12,6 +12,8 @@ from diffusers.utils import load_image as load_image_diffusers
 from diffusers import UNet2DConditionModel as OriginalUNet2DConditionModel
 from e4t.models.unet_2d_condition import UNet2DConditionModel
 from e4t.encoder import E4TEncoder
+from einops import rearrange, repeat
+import torch.nn as nn
 
 
 class AttributeDict(object):
@@ -188,3 +190,69 @@ def image_grid(imgs, rows, cols):
     for i, img in enumerate(imgs):
         grid.paste(img, box=(i % cols * w, i // cols * h))
     return grid
+
+
+class EmbedPointer:
+    def __init__(self, embed_pointer=None):
+        self.embed_pointer = embed_pointer
+        self.embed = None
+        self.cross_attn_count = 0
+        self.global_step = -1
+
+    def __call__(self):
+        return self.embed_pointer
+
+
+def regiter_attention_editor_diffusers(model, editor: EmbedPointer):
+    """
+    Register a attention editor to Diffuser Pipeline, refer from [Prompt-to-Prompt]
+    """
+    def wo_forward(self, place_in_unet):
+        def forward(input: torch.Tensor, **kwargs):
+            embed_y = editor.embed_pointer[0][1]
+            if embed_y is None:
+                return 0
+            # embed_y = editor.embed_pointer[0][1]
+            input_x = input.mean(dim=1)
+            # if editor.global_step != editor.embed_pointer[0][0]:
+            #     breakpoint()
+            #     editor.global_step = editor.embed_pointer[0][0]
+            # input_x = torch.cat([input_x, self.v.unsqueeze(0)], dim=1)
+            vx = self.linear1(input_x.detach()) # (row_dim)
+            vy = self.linear2(embed_y) # (column_dim)
+            # vx = self.linear1(self.v) # (row_dim)
+            # vy = self.linear2(self.v) # (column_dim)
+            # matrix multiplication -> (row_dim, column_dim)
+            # v_matrix = vx.unsqueeze(0).T * vy.unsqueeze(0)
+            v_matrix = torch.einsum('b i, b j -> b i j', vx, vy)
+            # columnwise
+            # v_matrix = self.linear_column(v_matrix.T)
+            v_matrix = self.linear_column(rearrange(v_matrix, 'b i j -> b j i'))
+            # rowwise
+            # v_matrix = self.linear_row(v_matrix.T)
+            v_matrix = self.linear_row(rearrange(v_matrix, 'b i j -> b j i'))
+            # if self.row_dim != self.column_dim:
+            #     breakpoint()
+            # return v_matrix.T
+            return rearrange(v_matrix, 'b i j -> b j i')
+
+        return forward
+
+    def register_editor(net, count, place_in_unet):
+        for name, subnet in net.named_children():
+            if net.__class__.__name__ == 'WeightOffsets':  # spatial Transformer layer
+                net.forward = wo_forward(net, place_in_unet)
+                return count + 1
+            elif hasattr(net, 'children'):
+                count = register_editor(subnet, count, place_in_unet)
+        return count
+
+    cross_att_count = 0
+    for net_name, net in model.named_children():
+        if "down" in net_name:
+            cross_att_count += register_editor(net, 0, "down")
+        elif "mid" in net_name:
+            cross_att_count += register_editor(net, 0, "mid")
+        elif "up" in net_name:
+            cross_att_count += register_editor(net, 0, "up")
+    editor.num_att_layers = cross_att_count

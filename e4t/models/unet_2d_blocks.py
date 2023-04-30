@@ -812,7 +812,8 @@ class CrossAttnDownBlock2D(nn.Module):
         self.gradient_checkpointing = False
 
     def forward(
-        self, hidden_states, temb=None, encoder_hidden_states=None, attention_mask=None, cross_attention_kwargs=None
+        self, hidden_states, temb=None, encoder_hidden_states=None, attention_mask=None, cross_attention_kwargs=None,
+        lora_embed=None,
     ):
         # TODO(Patrick, William) - attention mask is not used
         output_states = ()

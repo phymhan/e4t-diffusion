@@ -422,6 +422,7 @@ class UNet2DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
         return_dict=True,
         #############################
         return_encoder_outputs=False,
+        lora_embed=None,
         #############################
     ):
         default_overall_up_factor = 2 ** self.num_upsamplers
@@ -491,6 +492,9 @@ class UNet2DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
                     encoder_hidden_states=encoder_hidden_states,
                     attention_mask=attention_mask,
                     cross_attention_kwargs=cross_attention_kwargs,
+                    ##########
+                    # lora_embed=lora_embed,
+                    ##########
                 )
             else:
                 sample, res_samples = downsample_block(hidden_states=sample, temb=emb)
@@ -513,6 +517,9 @@ class UNet2DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
                 encoder_hidden_states=encoder_hidden_states,
                 attention_mask=attention_mask,
                 cross_attention_kwargs=cross_attention_kwargs,
+                ##########
+                # lora_embed=lora_embed,
+                ##########
             )
 
         if return_encoder_outputs:
@@ -545,6 +552,9 @@ class UNet2DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
                     cross_attention_kwargs=cross_attention_kwargs,
                     upsample_size=upsample_size,
                     attention_mask=attention_mask,
+                    ##########
+                    # lora_embed=lora_embed,
+                    ##########
                 )
             else:
                 sample = upsample_block(
