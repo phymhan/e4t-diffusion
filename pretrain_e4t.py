@@ -31,7 +31,7 @@ from e4t.models.modeling_clip import CLIPTextModel
 from e4t.encoder import E4TEncoder
 from e4t.pipeline_stable_diffusion_e4t import StableDiffusionE4TPipeline
 from e4t.utils import load_e4t_unet, load_e4t_encoder, save_e4t_unet, save_e4t_encoder, image_grid
-from e4t.utils import EmbedPointer, regiter_attention_editor_diffusers
+from e4t.utils import str2bool, extract_kwargs_from_config
 
 
 templates = [
@@ -110,6 +110,13 @@ def parse_args():
     parser.add_argument("--lr_scheduler", type=str, default="constant", help='The scheduler type to use. Choose between ["linear", "cosine", "cosine_with_restarts", "polynomial", "constant", "constant_with_warmup"]')
     parser.add_argument("--lr_warmup_steps", type=int, default=0, help="Number of steps for the warmup in the lr scheduler.")
     parser.add_argument("--local_rank", type=int, default=-1, help="For distributed training: local_rank")
+    parser.add_argument("--wo_config", default="base1", type=str, help="wo_config")
+    parser.add_argument("--wo_vdim", default=1, type=int, help="wo_vdim")
+    parser.add_argument("--wo_zero_init", type=str2bool, default=True)
+    parser.add_argument("--wo_detach_input", type=str2bool, default=True)
+    parser.add_argument("--wo_detach_lora_embed", type=str2bool, default=False)
+    parser.add_argument("--wo_embed_dim", default=768, type=int)
+    parser.add_argument("--which_encoder", type=str, default="e4t_2", choices=["e4t", "e4t_legacy", "e4t_2"])
     args = parser.parse_args()
     env_local_rank = int(os.environ.get("LOCAL_RANK", -1))
     if env_local_rank != -1 and env_local_rank != args.local_rank:
@@ -231,6 +238,8 @@ def main():
         set_seed(args.seed)
 
     # load pre-trained model
+    wo_kwargs = extract_kwargs_from_config(args, "wo_")
+
     tokenizer = CLIPTokenizer.from_pretrained(args.pretrained_model_name_or_path, subfolder="tokenizer")
     noise_scheduler = DDPMScheduler.from_pretrained(args.pretrained_model_name_or_path, subfolder="scheduler")
     text_encoder = CLIPTextModel.from_pretrained(args.pretrained_model_name_or_path, subfolder="text_encoder", revision=args.revision)
@@ -238,7 +247,8 @@ def main():
     unet = load_e4t_unet(
         args.pretrained_model_name_or_path, 
         ckpt_path=os.path.join(args.pretrained_model_name_or_path, "unet.pt") if os.path.exists(os.path.join(args.pretrained_model_name_or_path, "weight_offsets.pt")) else None,
-        revision=args.revision
+        revision=args.revision,
+        wo_kwargs=wo_kwargs,
     )
     # encoder
     e4t_encoder = load_e4t_encoder(
@@ -248,6 +258,9 @@ def main():
         version=args.clip_model_name_or_path.split("::")[1],
         freeze_clip_vision=not args.unfreeze_clip_vision,
         ckpt_path=os.path.join(args.pretrained_model_name_or_path, "encoder.pt") if os.path.exists(os.path.join(args.pretrained_model_name_or_path, "weight_offsets.pt")) else None,
+        add_lora_prediction_head=wo_kwargs["wo_config"].startswith("more"),
+        lora_embedding_dim=wo_kwargs["wo_embed_dim"],
+        which_encoder=args.which_encoder,
     )
 
     # Add the placeholder token in tokenizer
@@ -273,8 +286,10 @@ def main():
     # Initialize the optimizer
     optim_params = [p for p in e4t_encoder.parameters() if p.requires_grad]
     # weight offsets
+    unet.requires_grad_(False)
     for n, p in unet.named_parameters():
         if "wo" in n:
+            p.requires_grad_(True)
             optim_params += [p]
     total_params = sum(p.numel() for p in optim_params)
     print(f"Number of Trainable Parameters: {total_params * 1.e-6:.2f} M")
@@ -450,7 +465,7 @@ def main():
     scheduler = DDIMScheduler.from_pretrained(args.pretrained_model_name_or_path, subfolder="scheduler")
 
     @torch.no_grad()
-    def sample(images, step, embed_pointer=None):
+    def sample(images, step, cross_attention_kwargs={}):
         images_to_log = []
         # to pil
         x_samples = torch.clamp((images + 1.0) / 2.0, min=0.0, max=1.0)
@@ -471,7 +486,6 @@ def main():
             safety_checker=None,
             feature_extractor=None,
         )
-
         if is_xformers_available():
             pipeline.enable_xformers_memory_efficient_attention()
         pipeline = pipeline.to(accelerator.device)
@@ -493,7 +507,7 @@ def main():
                         num_inference_steps=args.save_inference_steps,
                         generator=g_cuda,
                         image=image,
-                        embed_pointer=embed_pointer,
+                        cross_attention_kwargs=cross_attention_kwargs,
                     ).images
                     image_list.append(images[0])
         input_grid = image_grid(selected_images_to_log, rows=1, cols=len(selected_images_to_log))
@@ -583,9 +597,7 @@ def main():
     # Get the text embedding for e4t conditioning
     encoder_hidden_states_for_e4t = text_encoder(input_ids_for_encoder.to(accelerator.device))[0].to(dtype=weight_dtype)
 
-    embed_pointer = [(-1, None)]
-    editor = EmbedPointer(embed_pointer=embed_pointer)
-    regiter_attention_editor_diffusers(unet, editor)
+    cross_attention_kwargs = {**wo_kwargs, "embed": None}
 
     try:
         for epoch in range(first_epoch, args.num_train_epochs):
@@ -627,19 +639,16 @@ def main():
                     encoder_hidden_states_for_e4t_forward = encoder_hidden_states_for_e4t.expand(bsz, -1, -1)
                     # Get the unet encoder outputs
                     with torch.no_grad():
-                        ########## ???
-                        embed_pointer[0] = (global_step, None)
-                        # editor.embed = None
                         ##########
-                        encoder_outputs = unet(noisy_latents, timesteps, encoder_hidden_states_for_e4t_forward, return_encoder_outputs=True)
+                        cross_attention_kwargs["embed"] = None  # this will bypass unet's weight offsets
+                        cross_attention_kwargs["bypass"] = True
+                        ##########
+                        encoder_outputs = unet(noisy_latents, timesteps, encoder_hidden_states_for_e4t_forward,
+                            return_encoder_outputs=True, cross_attention_kwargs=cross_attention_kwargs)
                     # Forward E4T encoder to get the embedding
                     domain_embed, lora_embed = e4t_encoder(x=pixel_values, unet_down_block_samples=encoder_outputs["down_block_samples"])
                     # update word embedding
                     domain_embed = class_embed.clone().expand(bsz, -1) + args.domain_embed_scale * domain_embed
-                    ##########
-                    embed_pointer[0] = (global_step, lora_embed)
-                    # editor.embed = lora_embed
-                    ##########
                     
                     for i, placeholder_token_id_idx in enumerate(placeholder_token_id_idxs):
                         inputs_embeds[i, placeholder_token_id_idx, :] = domain_embed[i]
@@ -647,7 +656,12 @@ def main():
                     # Get the text embedding for conditioning
                     encoder_hidden_states = text_encoder(inputs_embeds=inputs_embeds)[0].to(dtype=weight_dtype)
                     # Predict the noise residual
-                    model_pred = unet(noisy_latents, timesteps, encoder_hidden_states).sample
+                    ##########
+                    cross_attention_kwargs["embed"] = lora_embed.detach() if args.wo_detach_lora_embed else lora_embed
+                    cross_attention_kwargs["bypass"] = False
+                    ##########
+                    model_pred = unet(noisy_latents, timesteps, encoder_hidden_states,
+                        cross_attention_kwargs=cross_attention_kwargs).sample
                     # Get the target for loss depending on the prediction type
                     if noise_scheduler.config.prediction_type == "epsilon":
                         target = noise
@@ -660,6 +674,9 @@ def main():
                     loss_reg = args.reg_lambda * domain_embed.pow(2).sum()
                     loss = loss_diff + loss_reg
                     accelerator.backward(loss)
+                    # pp1 = [pp for nn, pp in unet.named_parameters() if "linear1" in nn]
+                    # pp2 = [pp for nn, pp in unet.named_parameters() if "linear_row" in nn]
+                    # breakpoint()
                     # if accelerator.sync_gradients:
                     #     params_to_clip = itertools.chain(unet.parameters(), e4t_encoder.parameters())
                     #     accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
@@ -680,7 +697,7 @@ def main():
                 if global_step == 1 or global_step % args.log_steps == 0:
                     images = accelerator.gather(batch["pixel_values"])
                     if accelerator.is_main_process:
-                        sample(images, global_step, embed_pointer)
+                        sample(images, global_step, cross_attention_kwargs)
 
                 logs = {
                     "train/loss": loss.detach().item(),

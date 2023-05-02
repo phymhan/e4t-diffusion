@@ -110,10 +110,12 @@ class StableDiffusionE4TPipeline(StableDiffusionPipeline):
         ####################################################
         image: Union[PIL.Image.Image, List[PIL.Image.Image]] = None,
         domain_embed_scale: Optional[float] = None,
-        embed_pointer = None,
         ####################################################
     ):
         domain_embed_scale = self.domain_embed_scale if domain_embed_scale is None else domain_embed_scale
+        ca_kwargs = {
+            **cross_attention_kwargs,
+        }
         # 0. Default height and width to unet
         height = height or self.unet.config.sample_size * self.vae_scale_factor
         width = width or self.unet.config.sample_size * self.vae_scale_factor
@@ -187,27 +189,35 @@ class StableDiffusionE4TPipeline(StableDiffusionPipeline):
                 # E4t
                 latents_in = self.scheduler.scale_model_input(latents, t)
                 bsz = latents_in.size(0)
+                bsz2 = latent_model_input.size(0)
                 encoder_hidden_states_for_e4t_forward = e4t_inputs["encoder_hidden_states_for_e4t"].expand(bsz, -1, -1)
                 # Get the unet encoder outputs
-                embed_pointer[0] = (-1, None)
-                encoder_outputs = self.unet(latents_in, t, encoder_hidden_states_for_e4t_forward, return_encoder_outputs=True)
+                ##########
+                ca_kwargs['embed'] = None
+                ca_kwargs['bypass'] = True
+                ##########
+                encoder_outputs = self.unet(latents_in, t, encoder_hidden_states_for_e4t_forward, return_encoder_outputs=True,
+                                            cross_attention_kwargs=ca_kwargs)
                 # Forward E4T encoder to get the embedding
                 pixel_values = image.expand(bsz, -1, -1, -1).to(device)
                 domain_embed, lora_embed = self.e4t_encoder(x=pixel_values, unet_down_block_samples=encoder_outputs["down_block_samples"])
                 # update word embedding
                 domain_embed = self.class_embed.clone().expand(bsz, -1).to(device) + domain_embed_scale * domain_embed
-                embed_pointer[0] = (-1, lora_embed)
                 inputs_embeds_forward = e4t_inputs["inputs_embeds"].expand(bsz, -1, -1).clone().to(dtype=self.text_encoder.dtype, device=device)
                 inputs_embeds_forward[:, e4t_inputs["placeholder_token_id_idx"], :] = domain_embed
                 # Get the text embedding for conditioning
                 encoder_hidden_states = self.text_encoder(inputs_embeds=inputs_embeds_forward)[0].to(dtype=self.unet.dtype, device=device)
                 prompt_embeds = torch.cat([encoder_hidden_states_for_e4t_forward, encoder_hidden_states]) if do_classifier_free_guidance else encoder_hidden_states
                 # predict the noise residual
+                ##########
+                ca_kwargs['embed'] = lora_embed.expand(bsz2, -1)
+                ca_kwargs['bypass'] = False
+                ##########
                 noise_pred = self.unet(
                     latent_model_input,
                     t,
                     encoder_hidden_states=prompt_embeds,
-                    cross_attention_kwargs=cross_attention_kwargs,
+                    cross_attention_kwargs=ca_kwargs,
                 ).sample
 
                 # perform guidance

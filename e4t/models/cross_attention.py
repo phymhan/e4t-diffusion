@@ -48,6 +48,7 @@ class CrossAttention(nn.Module):
         added_kv_proj_dim: Optional[int] = None,
         norm_num_groups: Optional[int] = None,
         processor: Optional["AttnProcessor"] = None,
+        wo_kwargs: Optional[dict] = None,
     ):
         super().__init__()
         inner_dim = dim_head * heads
@@ -94,9 +95,9 @@ class CrossAttention(nn.Module):
         self.set_processor(processor)
         ###########
         # weight offsets
-        self.wo_q = WeightOffsets(query_dim, inner_dim)
-        self.wo_k = WeightOffsets(cross_attention_dim, inner_dim)
-        self.wo_v = WeightOffsets(cross_attention_dim, inner_dim)
+        self.wo_q = WeightOffsets(query_dim, inner_dim, **wo_kwargs)
+        self.wo_k = WeightOffsets(cross_attention_dim, inner_dim, **wo_kwargs)
+        self.wo_v = WeightOffsets(cross_attention_dim, inner_dim, **wo_kwargs)
         ###########
 
     def set_use_memory_efficient_attention_xformers(
@@ -282,6 +283,32 @@ class CrossAttention(nn.Module):
         return attention_mask
 
 
+def linear_forward_batch(input, weight, bias=None):
+    batch_size = input.shape[0]
+    bias = bias.expand(batch_size, 1, -1) if bias is not None else 0.
+    return torch.einsum("b t i, b j i -> b t j", input, weight) + bias
+
+
+def linear_forward(input, module, wo_module, kwargs):
+    config = kwargs.get("wo_config", "base1")
+    bypass = kwargs.get("bypass", False)
+    embed = kwargs.get("embed", None)
+    weight = module.weight
+    bias = module.bias
+    if config in ["base1"]:
+        weight_offset = wo_module(input, embed=embed, bypass=bypass)
+        return F.linear(input, weight * (1 + weight_offset), bias)
+    elif config in ["base2"]:
+        weight_offset = wo_module(input, embed=embed, bypass=bypass)
+        return F.linear(input, weight + weight_offset, bias)
+    elif config in ["more4", "more6"]:
+        weight_offset = wo_module(input, embed=embed, bypass=bypass)
+        return linear_forward_batch(input, weight.unsqueeze(0) + weight_offset, bias)
+    elif config in ["more1", "more2", "more3", "more5"]:
+        weight_offset = wo_module(input, embed=embed, bypass=bypass)
+        return linear_forward_batch(input, weight.unsqueeze(0) * (1 + weight_offset), bias)
+
+
 class CrossAttnProcessor:
     def __call__(
         self,
@@ -289,15 +316,13 @@ class CrossAttnProcessor:
         hidden_states,
         encoder_hidden_states=None,
         attention_mask=None,
+        **cross_attention_kwargs,
     ):
         batch_size, sequence_length, _ = hidden_states.shape
         attention_mask = attn.prepare_attention_mask(attention_mask, sequence_length, batch_size)
         ######################
         # query = attn.to_q(hidden_states)
-        # if attn.wo_k.row_dim != attn.wo_k.column_dim:
-        #     breakpoint()
-        # query = F.linear(hidden_states, attn.to_q.weight * (1 + attn.wo_q(hidden_states)), bias=attn.to_q.bias)
-        query = torch.einsum("bij,bkj->bik", hidden_states, repeat(attn.to_q.weight, 'i j -> b i j', b=batch_size) * (1 + attn.wo_q(hidden_states))) + (attn.to_q.bias if attn.to_q.bias is not None else 0.)
+        query = linear_forward(hidden_states, attn.to_q, attn.wo_q, cross_attention_kwargs)
         ######################
         if encoder_hidden_states is None:
             encoder_hidden_states = hidden_states
@@ -306,10 +331,10 @@ class CrossAttnProcessor:
         ######################
         # key = attn.to_k(encoder_hidden_states)
         # key = F.linear(encoder_hidden_states, attn.to_k.weight * (1 + attn.wo_k(encoder_hidden_states)), bias=attn.to_k.bias)
-        key = torch.einsum("bij,bkj->bik", encoder_hidden_states, repeat(attn.to_k.weight, 'i j -> b i j', b=batch_size) * (1 + attn.wo_k(encoder_hidden_states))) + (attn.to_k.bias if attn.to_k.bias is not None else 0.)
+        key = linear_forward(encoder_hidden_states, attn.to_k, attn.wo_k, cross_attention_kwargs)
         # value = attn.to_v(encoder_hidden_states)
         # value = F.linear(encoder_hidden_states, attn.to_v.weight * (1 + attn.wo_v(encoder_hidden_states)), bias=attn.to_v.bias)
-        value = torch.einsum("bij,bkj->bik", encoder_hidden_states, repeat(attn.to_v.weight, 'i j -> b i j', b=batch_size) * (1 + attn.wo_v(encoder_hidden_states))) + (attn.to_v.bias if attn.to_v.bias is not None else 0.)
+        value = linear_forward(encoder_hidden_states, attn.to_v, attn.wo_v, cross_attention_kwargs)
         ######################
         query = attn.head_to_batch_dim(query)
         key = attn.head_to_batch_dim(key)
@@ -457,6 +482,7 @@ class XFormersCrossAttnProcessor:
 
     def __call__(self, attn: CrossAttention, hidden_states, encoder_hidden_states=None, attention_mask=None):
         batch_size, sequence_length, _ = hidden_states.shape
+        breakpoint()
 
         attention_mask = attn.prepare_attention_mask(attention_mask, sequence_length, batch_size)
 
@@ -501,6 +527,7 @@ class AttnProcessor2_0:
 
     def __call__(self, attn: CrossAttention, hidden_states, encoder_hidden_states=None, attention_mask=None):
         batch_size, sequence_length, inner_dim = hidden_states.shape
+        breakpoint()
 
         if attention_mask is not None:
             attention_mask = attn.prepare_attention_mask(attention_mask, sequence_length, batch_size)
@@ -605,6 +632,7 @@ class SlicedAttnProcessor:
 
     def __call__(self, attn: CrossAttention, hidden_states, encoder_hidden_states=None, attention_mask=None):
         batch_size, sequence_length, _ = hidden_states.shape
+        breakpoint()
 
         attention_mask = attn.prepare_attention_mask(attention_mask, sequence_length, batch_size)
 

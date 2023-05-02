@@ -210,6 +210,7 @@ class BasicTransformerBlock(nn.Module):
         norm_elementwise_affine: bool = True,
         norm_type: str = "layer_norm",
         final_dropout: bool = False,
+        wo_kwargs = None,
     ):
         super().__init__()
         self.only_cross_attention = only_cross_attention
@@ -232,6 +233,7 @@ class BasicTransformerBlock(nn.Module):
             bias=attention_bias,
             cross_attention_dim=cross_attention_dim if only_cross_attention else None,
             upcast_attention=upcast_attention,
+            wo_kwargs=wo_kwargs,
         )
 
         self.ff = FeedForward(dim, dropout=dropout, activation_fn=activation_fn, final_dropout=final_dropout)
@@ -246,6 +248,7 @@ class BasicTransformerBlock(nn.Module):
                 dropout=dropout,
                 bias=attention_bias,
                 upcast_attention=upcast_attention,
+                wo_kwargs=wo_kwargs,
             )  # is self-attn if encoder_hidden_states is none
         else:
             self.attn2 = None

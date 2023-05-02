@@ -43,6 +43,8 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=None, help="the seed (for reproducible sampling)")
     parser.add_argument("--scheduler_type", type=str, choices=["ddim", "plms", "lms", "euler", "euler_ancestral", "dpm_solver++"], default="ddim", help="diffusion scheduler type")
     parser.add_argument("--enable_xformers_memory_efficient_attention", action="store_true", help="Whether or not to use xformers.")
+    parser.add_argument("--wo_config", default="base1", type=str, help="wo_config")
+    parser.add_argument("--wo_vdim", default=1, type=int, help="wo_vdim")
     
     opt = parser.parse_args()
     return opt
@@ -82,6 +84,7 @@ def main():
     # unet
     unet = load_e4t_unet(
         ckpt_path=os.path.join(args.pretrained_model_name_or_path, "weight_offsets.pt"),
+        wo_kwargs={"wo_config": args.wo_config},
     )
     # text encoder
     tokenizer = CLIPTokenizer.from_pretrained(pretrained_model_name_or_path, subfolder="tokenizer")

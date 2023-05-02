@@ -46,6 +46,7 @@ def get_down_block(
     only_cross_attention=False,
     upcast_attention=False,
     resnet_time_scale_shift="default",
+    wo_kwargs=None,
 ):
     down_block_type = down_block_type[7:] if down_block_type.startswith("UNetRes") else down_block_type
     if down_block_type == "DownBlock2D":
@@ -107,6 +108,7 @@ def get_down_block(
             only_cross_attention=only_cross_attention,
             upcast_attention=upcast_attention,
             resnet_time_scale_shift=resnet_time_scale_shift,
+            wo_kwargs=wo_kwargs,
         )
     elif down_block_type == "SimpleCrossAttnDownBlock2D":
         if cross_attention_dim is None:
@@ -218,6 +220,7 @@ def get_up_block(
     only_cross_attention=False,
     upcast_attention=False,
     resnet_time_scale_shift="default",
+    wo_kwargs=None,
 ):
     up_block_type = up_block_type[7:] if up_block_type.startswith("UNetRes") else up_block_type
     if up_block_type == "UpBlock2D":
@@ -266,6 +269,7 @@ def get_up_block(
             only_cross_attention=only_cross_attention,
             upcast_attention=upcast_attention,
             resnet_time_scale_shift=resnet_time_scale_shift,
+            wo_kwargs=wo_kwargs,
         )
     elif up_block_type == "SimpleCrossAttnUpBlock2D":
         if cross_attention_dim is None:
@@ -387,6 +391,7 @@ class UNetMidBlock2D(nn.Module):
         add_attention: bool = True,
         attn_num_head_channels=1,
         output_scale_factor=1.0,
+        wo_kwargs=None,
     ):
         super().__init__()
         resnet_groups = resnet_groups if resnet_groups is not None else min(in_channels // 4, 32)
@@ -469,6 +474,7 @@ class UNetMidBlock2DCrossAttn(nn.Module):
         dual_cross_attention=False,
         use_linear_projection=False,
         upcast_attention=False,
+        wo_kwargs=None,
     ):
         super().__init__()
 
@@ -505,6 +511,7 @@ class UNetMidBlock2DCrossAttn(nn.Module):
                         norm_num_groups=resnet_groups,
                         use_linear_projection=use_linear_projection,
                         upcast_attention=upcast_attention,
+                        wo_kwargs=wo_kwargs,
                     )
                 )
             else:
@@ -746,6 +753,7 @@ class CrossAttnDownBlock2D(nn.Module):
         use_linear_projection=False,
         only_cross_attention=False,
         upcast_attention=False,
+        wo_kwargs=None,
     ):
         super().__init__()
         resnets = []
@@ -782,6 +790,7 @@ class CrossAttnDownBlock2D(nn.Module):
                         use_linear_projection=use_linear_projection,
                         only_cross_attention=only_cross_attention,
                         upcast_attention=upcast_attention,
+                        wo_kwargs=wo_kwargs,
                     )
                 )
             else:
@@ -813,7 +822,6 @@ class CrossAttnDownBlock2D(nn.Module):
 
     def forward(
         self, hidden_states, temb=None, encoder_hidden_states=None, attention_mask=None, cross_attention_kwargs=None,
-        lora_embed=None,
     ):
         # TODO(Patrick, William) - attention mask is not used
         output_states = ()
@@ -1717,6 +1725,7 @@ class CrossAttnUpBlock2D(nn.Module):
         use_linear_projection=False,
         only_cross_attention=False,
         upcast_attention=False,
+        wo_kwargs=None,
     ):
         super().__init__()
         resnets = []
@@ -1755,6 +1764,7 @@ class CrossAttnUpBlock2D(nn.Module):
                         use_linear_projection=use_linear_projection,
                         only_cross_attention=only_cross_attention,
                         upcast_attention=upcast_attention,
+                        wo_kwargs=wo_kwargs,
                     )
                 )
             else:

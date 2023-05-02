@@ -1,5 +1,6 @@
 import os
 import json
+import argparse
 from requests.exceptions import HTTPError
 import huggingface_hub
 from huggingface_hub.utils._errors import EntryNotFoundError
@@ -11,7 +12,6 @@ import torch
 from diffusers.utils import load_image as load_image_diffusers
 from diffusers import UNet2DConditionModel as OriginalUNet2DConditionModel
 from e4t.models.unet_2d_condition import UNet2DConditionModel
-from e4t.encoder import E4TEncoder
 from einops import rearrange, repeat
 import torch.nn as nn
 
@@ -119,7 +119,7 @@ def load_e4t_unet(pretrained_model_name_or_path=None, ckpt_path=None, **kwargs):
         ckpt_sd = torch.load(ckpt_path, map_location="cpu")
         state_dict.update(ckpt_sd)
         print(f"Resuming from {ckpt_path}")
-    unet = UNet2DConditionModel(**unet.config)
+    unet = UNet2DConditionModel(wo_kwargs=kwargs.get("wo_kwargs", None), **unet.config)
     m, u = unet.load_state_dict(state_dict, strict=False)
     if len(m) > 0 and ckpt_path:
         raise RuntimeError(f"missing keys:\n{m}")
@@ -134,6 +134,15 @@ def save_e4t_unet(model, save_dir):
 
 
 def load_e4t_encoder(ckpt_path=None, **kwargs):
+    which_encoder = kwargs.pop("which_encoder", "e4t")
+    if which_encoder == "e4t":
+        from e4t.encoder import E4TEncoder
+    elif which_encoder == "e4t_legacy":
+        from e4t.encoder import E4TEncoderLegacy as E4TEncoder
+    elif which_encoder == "e4t_2":
+        from e4t.encoder import E4TEncoder2 as E4TEncoder
+    else:
+        raise ValueError(f"Unknown encoder {which_encoder}")
     encoder = E4TEncoder(**kwargs)
     if ckpt_path:
         if os.path.exists(ckpt_path):
@@ -192,67 +201,25 @@ def image_grid(imgs, rows, cols):
     return grid
 
 
-class EmbedPointer:
-    def __init__(self, embed_pointer=None):
-        self.embed_pointer = embed_pointer
-        self.embed = None
-        self.cross_attn_count = 0
-        self.global_step = -1
-
-    def __call__(self):
-        return self.embed_pointer
+def extract_kwargs_from_config(config, prefix="wo_"):
+    config = vars(config)
+    kwargs = {}
+    for k, v in config.items():
+        if k.startswith(prefix):
+            kwargs[k] = v
+    return kwargs
 
 
-def regiter_attention_editor_diffusers(model, editor: EmbedPointer):
+def str2bool(v):
     """
-    Register a attention editor to Diffuser Pipeline, refer from [Prompt-to-Prompt]
+    borrowed from:
+    https://stackoverflow.com/questions/715417/converting-from-a-string-to-boolean-in-python
+    :param v:
+    :return: bool(v)
     """
-    def wo_forward(self, place_in_unet):
-        def forward(input: torch.Tensor, **kwargs):
-            embed_y = editor.embed_pointer[0][1]
-            if embed_y is None:
-                return 0
-            # embed_y = editor.embed_pointer[0][1]
-            input_x = input.mean(dim=1)
-            # if editor.global_step != editor.embed_pointer[0][0]:
-            #     breakpoint()
-            #     editor.global_step = editor.embed_pointer[0][0]
-            # input_x = torch.cat([input_x, self.v.unsqueeze(0)], dim=1)
-            vx = self.linear1(input_x.detach()) # (row_dim)
-            vy = self.linear2(embed_y) # (column_dim)
-            # vx = self.linear1(self.v) # (row_dim)
-            # vy = self.linear2(self.v) # (column_dim)
-            # matrix multiplication -> (row_dim, column_dim)
-            # v_matrix = vx.unsqueeze(0).T * vy.unsqueeze(0)
-            v_matrix = torch.einsum('b i, b j -> b i j', vx, vy)
-            # columnwise
-            # v_matrix = self.linear_column(v_matrix.T)
-            v_matrix = self.linear_column(rearrange(v_matrix, 'b i j -> b j i'))
-            # rowwise
-            # v_matrix = self.linear_row(v_matrix.T)
-            v_matrix = self.linear_row(rearrange(v_matrix, 'b i j -> b j i'))
-            # if self.row_dim != self.column_dim:
-            #     breakpoint()
-            # return v_matrix.T
-            return rearrange(v_matrix, 'b i j -> b j i')
-
-        return forward
-
-    def register_editor(net, count, place_in_unet):
-        for name, subnet in net.named_children():
-            if net.__class__.__name__ == 'WeightOffsets':  # spatial Transformer layer
-                net.forward = wo_forward(net, place_in_unet)
-                return count + 1
-            elif hasattr(net, 'children'):
-                count = register_editor(subnet, count, place_in_unet)
-        return count
-
-    cross_att_count = 0
-    for net_name, net in model.named_children():
-        if "down" in net_name:
-            cross_att_count += register_editor(net, 0, "down")
-        elif "mid" in net_name:
-            cross_att_count += register_editor(net, 0, "mid")
-        elif "up" in net_name:
-            cross_att_count += register_editor(net, 0, "up")
-    editor.num_att_layers = cross_att_count
+    if v.lower() in ('yes', 'true', 't', 'y', '1'):
+        return True
+    elif v.lower() in ('no', 'false', 'f', 'n', '0'):
+        return False
+    else:
+        raise argparse.ArgumentTypeError('Boolean value expected.')

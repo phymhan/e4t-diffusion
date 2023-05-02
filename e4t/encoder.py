@@ -14,9 +14,13 @@ class E4TEncoderLegacy(ModelMixin, ConfigMixin):
             self,
             word_embedding_dim=768,
             block_out_channels=(320, 640, 1280, 1280),
+            arch="ViT-H-14",
+            version="laion2b_s32b_b79k",
             clip_model="openai/clip-vit-large-patch14",
             antialias=False,
             freeze_clip_vision=True,
+            lora_embedding_dim=768,
+            **kwargs
     ):
         super().__init__()
         self.clip_vision = CLIPVisionModel.from_pretrained(clip_model)
@@ -32,6 +36,14 @@ class E4TEncoderLegacy(ModelMixin, ConfigMixin):
             self.clip_vision.config.hidden_size+sum(block_out_channels),
             word_embedding_dim,
         )
+        self.add_lora_prediction_head = kwargs.get("add_lora_prediction_head", False)
+        if self.add_lora_prediction_head:
+            self.lora_linear = nn.Linear(
+                self.clip_vision.config.hidden_size+sum(block_out_channels),
+                lora_embedding_dim,
+            )
+        else:
+            self.lora_linear = None
 
         self.image_size = self.clip_vision.config.image_size
         self.antialias = antialias
@@ -68,11 +80,17 @@ class E4TEncoderLegacy(ModelMixin, ConfigMixin):
         clip_hidden_states = torch.stack(clip_hidden_states)
         clip_hidden_states = torch.mean(clip_hidden_states, dim=0)
         # unet pooling
+        ##########
+        unet_down_block_samples = [unet_down_block_samples[i] for i in [2, 5, 8, 12]]
+        ##########
         pooled_outputs = [self.act(sample.mean(dim=(2, 3))) for sample in unet_down_block_samples]
         pooled_outputs = [self.act(clip_hidden_states)] + pooled_outputs
         pooled_outputs = torch.cat(pooled_outputs, dim=1)
         # final linear layer
-        return self.final_linear(pooled_outputs)
+        if self.add_lora_prediction_head:
+            return self.final_linear(pooled_outputs), self.lora_linear(pooled_outputs)
+        else:
+            return self.final_linear(pooled_outputs), None
 
 
 class E4TEncoder(ModelMixin, ConfigMixin):
@@ -85,6 +103,7 @@ class E4TEncoder(ModelMixin, ConfigMixin):
             version="laion2b_s32b_b79k",
             antialias=False,
             freeze_clip_vision=True,
+            lora_embedding_dim=768,
             **kwargs
     ):
         super().__init__()
@@ -126,7 +145,11 @@ class E4TEncoder(ModelMixin, ConfigMixin):
         self.image_size = 224
         self.antialias = antialias
         ##########
-        self.lora_linear = nn.Linear(clip_vision_hidden_size, word_embedding_dim)
+        self.add_lora_prediction_head = kwargs.get("add_lora_prediction_head", False)
+        if self.add_lora_prediction_head:
+            self.lora_linear = nn.Linear(clip_vision_hidden_size, lora_embedding_dim)
+        else:
+            self.lora_linear = None
         ##########
         self.register_buffer('mean', torch.Tensor([0.48145466, 0.4578275, 0.40821073]), persistent=False)
         self.register_buffer('std', torch.Tensor([0.26862954, 0.26130258, 0.27577711]), persistent=False)
@@ -169,7 +192,118 @@ class E4TEncoder(ModelMixin, ConfigMixin):
         clip_hidden_states = self.act(clip_hidden_states)
         # final linear layer
         ##########
-        return self.final_linear(clip_hidden_states), self.lora_linear(clip_hidden_states)
+        if self.add_lora_prediction_head:
+            return self.final_linear(clip_hidden_states), self.lora_linear(clip_hidden_states)
+        else:
+            return self.final_linear(clip_hidden_states), None
+
+
+class E4TEncoder2(ModelMixin, ConfigMixin):
+    @register_to_config
+    def __init__(
+            self,
+            word_embedding_dim=768,
+            block_out_channels=(320, 640, 1280, 1280),
+            arch="ViT-H-14", 
+            version="laion2b_s32b_b79k",
+            antialias=False,
+            freeze_clip_vision=True,
+            lora_embedding_dim=768,
+            **kwargs
+    ):
+        super().__init__()
+        model, _, _ = open_clip.create_model_and_transforms(arch, device=torch.device('cpu'), pretrained=version)
+        del model.transformer
+        self.clip_vision = model.visual
+        self.clip_vision.output_tokens = True
+        # remove proj
+        self.clip_vision.proj = None
+        clip_vision_hidden_size = self.clip_vision.ln_post.normalized_shape[0]
+        if freeze_clip_vision:
+            self.clip_vision.requires_grad_(False)
+        # unet
+        self.unet_feature_embedder = nn.Sequential(
+            nn.Linear(sum(block_out_channels), clip_vision_hidden_size),
+            nn.LeakyReLU(),
+            nn.Linear(clip_vision_hidden_size, clip_vision_hidden_size)
+        )
+        self.feature_linear = nn.Linear(2*clip_vision_hidden_size, clip_vision_hidden_size)
+
+        self.first_linears = nn.ModuleList([])
+        if arch == "ViT-H-14":
+            # every odd resblock in the OpenCLIP implementation
+            n_odd_layers = 128 + 1
+        else:
+            n_odd_layers = kwargs.get("n_odd_layers", None)
+            assert n_odd_layers is not None, "You must specify `n_odd_layers`!"
+            n_odd_layers = int(n_odd_layers)
+
+        for _ in range(n_odd_layers):
+            self.first_linears.append(
+                nn.Linear(
+                    clip_vision_hidden_size,
+                    clip_vision_hidden_size,
+                )
+            )
+        self.act = nn.LeakyReLU()
+        self.final_linear = nn.Linear(clip_vision_hidden_size, word_embedding_dim)
+        self.image_size = 224
+        self.antialias = antialias
+        ##########
+        self.add_lora_prediction_head = kwargs.get("add_lora_prediction_head", False)
+        if self.add_lora_prediction_head:
+            self.lora_linear = nn.Linear(clip_vision_hidden_size, lora_embedding_dim)
+        else:
+            self.lora_linear = None
+        ##########
+        self.register_buffer('mean', torch.Tensor([0.48145466, 0.4578275, 0.40821073]), persistent=False)
+        self.register_buffer('std', torch.Tensor([0.26862954, 0.26130258, 0.27577711]), persistent=False)
+
+    def preprocess(self, x):
+        # normalize to [0,1]
+        x = kornia.geometry.resize(
+            x, (self.image_size, self.image_size), interpolation='bicubic', align_corners=True, antialias=self.antialias
+        )
+        x = (x + 1.) / 2.
+        # renormalize according to clip
+        x = kornia.enhance.normalize(x, self.mean, self.std)
+        return x
+
+    def forward(self, x, unet_down_block_samples: tuple):
+        """
+        Inputs:
+            - x: tensor of image
+        """
+        # unet pooling
+        ##########
+        unet_down_block_samples = [unet_down_block_samples[i] for i in [2, 5, 8, 12]]
+        ##########
+        unet_down_block_samples = [sample.mean(dim=(2, 3)) for sample in unet_down_block_samples]
+        unet_pooled_features_concat = torch.cat(unet_down_block_samples, dim=-1)
+        unet_pooled_features = self.unet_feature_embedder(unet_pooled_features_concat)
+
+        # clip feature extractor
+        # x is assumed to be in range [-1,1]
+        x = self.preprocess(x)
+        pooled_output, hidden_states = self.clip_vision(x)
+        hidden_states = hidden_states[:, 1::2, :] # take every 2nd layer 
+        hidden_states = torch.cat([pooled_output.unsqueeze(1), hidden_states], dim=1)
+        n_layers = hidden_states.size(1)
+        clip_hidden_states_list = []
+        for i in range(n_layers):
+            clip_hidden_states = self.feature_linear(torch.cat([hidden_states[:, i, :], unet_pooled_features], dim=-1))
+            clip_hidden_states = self.first_linears[i](clip_hidden_states)
+            clip_hidden_states_list.append(clip_hidden_states)
+        clip_hidden_states = torch.stack(clip_hidden_states_list)
+        # average pooling
+        clip_hidden_states = torch.mean(clip_hidden_states, dim=0)
+        clip_hidden_states = self.act(clip_hidden_states)
+        # final linear layer
+        ##########
+        if self.add_lora_prediction_head:
+            return self.final_linear(clip_hidden_states), self.lora_linear(clip_hidden_states)
+        else:
+            return self.final_linear(clip_hidden_states), None
 
 
 if __name__ == '__main__':

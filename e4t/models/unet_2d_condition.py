@@ -192,6 +192,7 @@ class UNet2DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
                 only_cross_attention=only_cross_attention[i],
                 upcast_attention=upcast_attention,
                 resnet_time_scale_shift=resnet_time_scale_shift,
+                wo_kwargs=kwargs.get("wo_kwargs", None),
             )
             self.down_blocks.append(down_block)
 
@@ -210,6 +211,7 @@ class UNet2DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
                 dual_cross_attention=dual_cross_attention,
                 use_linear_projection=use_linear_projection,
                 upcast_attention=upcast_attention,
+                wo_kwargs=kwargs.get("wo_kwargs", None),
             )
         elif mid_block_type == "UNetMidBlock2DSimpleCrossAttn":
             self.mid_block = UNetMidBlock2DSimpleCrossAttn(
@@ -269,6 +271,7 @@ class UNet2DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
                 only_cross_attention=only_cross_attention[i],
                 upcast_attention=upcast_attention,
                 resnet_time_scale_shift=resnet_time_scale_shift,
+                wo_kwargs=kwargs.get("wo_kwargs", None),
             )
             self.up_blocks.append(up_block)
             prev_output_channel = output_channel
