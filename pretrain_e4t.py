@@ -8,7 +8,7 @@ import json
 from tqdm.auto import tqdm
 import blobfile as bf
 import itertools
-
+import re
 import numpy as np
 from PIL import Image
 import albumentations
@@ -117,6 +117,7 @@ def parse_args():
     parser.add_argument("--wo_detach_lora_embed", type=str2bool, default=False)
     parser.add_argument("--wo_embed_dim", default=768, type=int)
     parser.add_argument("--which_encoder", type=str, default="e4t_2", choices=["e4t", "e4t_legacy", "e4t_2"])
+    parser.add_argument("--ref_image_paths", type=str, default=None, help="ref_image_paths")
     args = parser.parse_args()
     env_local_rank = int(os.environ.get("LOCAL_RANK", -1))
     if env_local_rank != -1 and env_local_rank != args.local_rank:
@@ -149,6 +150,21 @@ def make_transforms(size, random_crop=False):
         cropper = albumentations.RandomCrop(height=size, width=size)
     flip = albumentations.HorizontalFlip(p=0.5)
     return albumentations.Compose([rescaler, cropper, flip])
+
+
+def read_images(image_paths, size, random_crop=False):
+    transforms = make_transforms(size, random_crop=random_crop)
+    images = []
+    for image_path in re.split(":|,", image_paths):
+        image = Image.open(image_path)
+        image = image.convert("RGB")
+        image = np.array(image)
+        image = transforms(image=image)["image"]
+        image = (image / 127.5 - 1.0).astype(np.float32)
+        image = torch.from_numpy(image).permute(2, 0, 1)
+        images.append(image)
+    images = torch.stack(images, dim=0)
+    return images
 
 
 class E4TDataset(Dataset):
@@ -366,6 +382,11 @@ def main():
             train_dataset = train_dataset.with_format("torch")
             train_dataloader = DataLoader(train_dataset, batch_size=args.train_batch_size, collate_fn=collate_fn)
 
+    if args.ref_image_paths is not None:
+        ref_images = read_images(args.ref_image_paths, args.resolution)
+    else:
+        ref_images = None
+    
     if args.scale_lr:
         learning_rate = (
                 args.learning_rate * args.gradient_accumulation_steps * args.train_batch_size * accelerator.num_processes
@@ -489,18 +510,20 @@ def main():
         if is_xformers_available():
             pipeline.enable_xformers_memory_efficient_attention()
         pipeline = pipeline.to(accelerator.device)
-        g_cuda = torch.Generator(device=accelerator.device)
-        g_cuda = g_cuda.manual_seed(int(g_cuda.seed()))
-        # g_cuda = torch.Generator(device=accelerator.device).manual_seed(args.seed)
+        # g_cuda = torch.Generator(device=accelerator.device)
+        # g_cuda = g_cuda.manual_seed(int(g_cuda.seed()))
+        g_cuda = torch.Generator(device=accelerator.device).manual_seed(args.seed)
         pipeline.set_progress_bar_config(disable=True)
         sample_dir = os.path.join(args.output_dir, "samples")
         os.makedirs(sample_dir, exist_ok=True)
         prompts = args.save_sample_prompt.split(",")
         image_list = []
-        selected_images_to_log = random.sample(images_to_log, min(len(images_to_log), args.n_save_sample))
+        ##########
+        # selected_images_to_log = random.sample(images_to_log, min(len(images_to_log), args.n_save_sample))
+        selected_images_to_log = images_to_log
         with torch.autocast("cuda"), torch.inference_mode():
             for save_prompt in tqdm(prompts, desc="Generating samples"):
-                for image in selected_images_to_log:
+                for image in selected_images_to_log:  # one image at a time
                     images = pipeline(
                         save_prompt,
                         guidance_scale=args.save_guidance_scale,
@@ -697,7 +720,9 @@ def main():
                 if global_step == 1 or global_step % args.log_steps == 0:
                     images = accelerator.gather(batch["pixel_values"])
                     if accelerator.is_main_process:
-                        sample(images, global_step, cross_attention_kwargs)
+                        # sample_images = images if ref_images is None else torch.cat([ref_images.to(images.device), images], dim=0)
+                        sample_images = images if ref_images is None else ref_images.to(images.device)
+                        sample(sample_images[:args.n_save_sample], global_step, cross_attention_kwargs)
 
                 logs = {
                     "train/loss": loss.detach().item(),

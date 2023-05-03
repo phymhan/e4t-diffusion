@@ -120,7 +120,6 @@ class WeightOffsets(nn.Module):
     def forward(self, input: torch.Tensor = None, embed=None, bypass=False):
         if bypass:
             return 0
-        batch_size = input.shape[0]
         if self.wo_config == 'base1':
             vx = self.linear1(self.v) # (row_dim)
             vy = self.linear2(self.v) # (column_dim)

@@ -61,5 +61,5 @@ grid.png
 
 *.png
 checkpoints/
-logs/
+logs*/
 images/

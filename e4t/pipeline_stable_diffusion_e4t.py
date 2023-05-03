@@ -210,7 +210,7 @@ class StableDiffusionE4TPipeline(StableDiffusionPipeline):
                 prompt_embeds = torch.cat([encoder_hidden_states_for_e4t_forward, encoder_hidden_states]) if do_classifier_free_guidance else encoder_hidden_states
                 # predict the noise residual
                 ##########
-                ca_kwargs['embed'] = lora_embed.expand(bsz2, -1)
+                ca_kwargs['embed'] = lora_embed.expand(bsz2, -1) if lora_embed is not None else None
                 ca_kwargs['bypass'] = False
                 ##########
                 noise_pred = self.unet(
